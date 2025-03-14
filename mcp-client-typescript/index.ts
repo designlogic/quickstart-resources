@@ -15,11 +15,7 @@ if (!OPENAI_API_KEY) {
 }
 
 // System prompt to give context to the agent
-const SYSTEM_PROMPT = `You are a helpful weather assistant that can provide weather information and forecasts.
-You have access to weather data through specialized tools.
-Always be polite and professional in your responses.
-If you remember any user preferences or previous interactions, try to incorporate that context in your responses.
-If asked about non-weather topics, politely remind the user that you're specialized in weather information.`;
+const SYSTEM_PROMPT = `You are a helpful assistant.`;
 
 class MCPClient {
   private mcp: Client;
@@ -113,7 +109,7 @@ class MCPClient {
 
     // Initial OpenAI API call with full conversation history
     const response = await this.openai.chat.completions.create({
-      model: "gpt-4-turbo-preview",
+      model: "gpt-4o-mini",
       messages: this.conversationHistory,
       tools: this.tools,
       tool_choice: "auto",
