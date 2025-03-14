@@ -1,8 +1,5 @@
-import { Anthropic } from "@anthropic-ai/sdk";
-import {
-  MessageParam,
-  Tool,
-} from "@anthropic-ai/sdk/resources/messages/messages.mjs";
+import OpenAI from "openai";
+import type { ChatCompletionTool, ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -12,23 +9,47 @@ import dotenv from "dotenv";
 
 dotenv.config(); // load environment variables from .env
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-if (!ANTHROPIC_API_KEY) {
-  throw new Error("ANTHROPIC_API_KEY is not set");
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+if (!OPENAI_API_KEY) {
+  throw new Error("OPENAI_API_KEY is not set");
 }
+
+// System prompt to give context to the agent
+const SYSTEM_PROMPT = `You are a helpful weather assistant that can provide weather information and forecasts.
+You have access to weather data through specialized tools.
+Always be polite and professional in your responses.
+If you remember any user preferences or previous interactions, try to incorporate that context in your responses.
+If asked about non-weather topics, politely remind the user that you're specialized in weather information.`;
 
 class MCPClient {
   private mcp: Client;
-  private anthropic: Anthropic;
+  private openai: OpenAI;
   private transport: StdioClientTransport | null = null;
-  private tools: Tool[] = [];
+  private tools: ChatCompletionTool[] = [];
+  private conversationHistory: ChatCompletionMessageParam[] = [];
+  private maxHistoryLength: number = 10; // Maximum number of message pairs to keep
 
   constructor() {
-    // Initialize Anthropic client and MCP client
-    this.anthropic = new Anthropic({
-      apiKey: ANTHROPIC_API_KEY,
+    // Initialize OpenAI client and MCP client
+    this.openai = new OpenAI({
+      apiKey: OPENAI_API_KEY,
     });
     this.mcp = new Client({ name: "mcp-client-cli", version: "1.0.0" });
+    
+    // Initialize conversation history with system prompt
+    this.conversationHistory.push({
+      role: "system",
+      content: SYSTEM_PROMPT,
+    });
+  }
+
+  private trimConversationHistory() {
+    // Keep system message and last N pairs of messages
+    if (this.conversationHistory.length > (this.maxHistoryLength * 2) + 1) {
+      const systemMessage = this.conversationHistory[0];
+      const recentMessages = this.conversationHistory.slice(-(this.maxHistoryLength * 2));
+      this.conversationHistory = [systemMessage, ...recentMessages];
+    }
   }
 
   async connectToServer(serverScriptPath: string) {
@@ -59,16 +80,17 @@ class MCPClient {
 
       // List available tools
       const toolsResult = await this.mcp.listTools();
-      this.tools = toolsResult.tools.map((tool) => {
-        return {
+      this.tools = toolsResult.tools.map((tool) => ({
+        type: "function",
+        function: {
           name: tool.name,
           description: tool.description,
-          input_schema: tool.inputSchema,
-        };
-      });
+          parameters: tool.inputSchema,
+        },
+      }));
       console.log(
         "Connected to server with tools:",
-        this.tools.map(({ name }) => name),
+        this.tools.map((tool) => tool.function.name),
       );
     } catch (e) {
       console.log("Failed to connect to MCP server: ", e);
@@ -78,37 +100,44 @@ class MCPClient {
 
   async processQuery(query: string) {
     /**
-     * Process a query using Claude and available tools
+     * Process a query using GPT-4 and available tools
      *
      * @param query - The user's input query
      * @returns Processed response as a string
      */
-    const messages: MessageParam[] = [
-      {
-        role: "user",
-        content: query,
-      },
-    ];
+    // Add user's query to conversation history
+    this.conversationHistory.push({
+      role: "user",
+      content: query,
+    });
 
-    // Initial Claude API call
-    const response = await this.anthropic.messages.create({
-      model: "claude-3-5-sonnet-20241022",
-      max_tokens: 1000,
-      messages,
+    // Initial OpenAI API call with full conversation history
+    const response = await this.openai.chat.completions.create({
+      model: "gpt-4-turbo-preview",
+      messages: this.conversationHistory,
       tools: this.tools,
+      tool_choice: "auto",
     });
 
     // Process response and handle tool calls
     const finalText = [];
     const toolResults = [];
 
-    for (const content of response.content) {
-      if (content.type === "text") {
-        finalText.push(content.text);
-      } else if (content.type === "tool_use") {
+    const choice = response.choices[0];
+    if (choice.message.content) {
+      finalText.push(choice.message.content);
+      // Add assistant's response to conversation history
+      this.conversationHistory.push({
+        role: "assistant",
+        content: choice.message.content,
+      });
+    }
+
+    if (choice.message.tool_calls) {
+      for (const toolCall of choice.message.tool_calls) {
         // Execute tool call
-        const toolName = content.name;
-        const toolArgs = content.input as { [x: string]: unknown } | undefined;
+        const toolName = toolCall.function.name;
+        const toolArgs = JSON.parse(toolCall.function.arguments);
 
         const result = await this.mcp.callTool({
           name: toolName,
@@ -119,24 +148,38 @@ class MCPClient {
           `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`,
         );
 
-        // Continue conversation with tool results
-        messages.push({
-          role: "user",
+        // Add tool interaction to conversation history
+        this.conversationHistory.push({
+          role: "assistant",
+          content: "",
+          tool_calls: [toolCall],
+        } as ChatCompletionMessageParam);
+        this.conversationHistory.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
           content: result.content as string,
+        } as ChatCompletionMessageParam);
+
+        // Get next response from GPT-4 with updated history
+        const response = await this.openai.chat.completions.create({
+          model: "gpt-4-turbo-preview",
+          messages: this.conversationHistory,
         });
 
-        // Get next response from Claude
-        const response = await this.anthropic.messages.create({
-          model: "claude-3-5-sonnet-20241022",
-          max_tokens: 1000,
-          messages,
-        });
-
-        finalText.push(
-          response.content[0].type === "text" ? response.content[0].text : "",
-        );
+        if (response.choices[0].message.content) {
+          const content = response.choices[0].message.content;
+          finalText.push(content);
+          // Add final response to conversation history
+          this.conversationHistory.push({
+            role: "assistant",
+            content: content,
+          });
+        }
       }
     }
+
+    // Trim history if it gets too long
+    this.trimConversationHistory();
 
     return finalText.join("\n");
   }
