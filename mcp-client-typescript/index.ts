@@ -15,7 +15,22 @@ if (!OPENAI_API_KEY) {
 }
 
 // System prompt to give context to the agent
-const SYSTEM_PROMPT = `You are a helpful assistant.`;
+const systemPrompt = `You are a helpful assistant.
+
+Use your tools to achieve the user's goal.
+Treat the tool response like a co-worker.  If there is a problem, try again with the correct information. 
+For example, if the tool call returns "Username is required", try again with the correct username.
+
+Try to fix the problem before making the next tool call.
+
+Remember:
+- Never tell the user you're "about to" make more calls
+- Never say you'll "be right back"
+- Make ALL calls first, then respond once with everything
+- If you get errors, handle them and try again immediately
+- Only respond to the user when you have ALL requested colors
+
+Be friendly and enthusiastic in your final response, but don't narrate your process - just deliver the complete results!`;
 
 class MCPClient {
   private mcp: Client;
@@ -35,7 +50,7 @@ class MCPClient {
     // Initialize conversation history with system prompt
     this.conversationHistory.push({
       role: "system",
-      content: SYSTEM_PROMPT,
+      content: systemPrompt,
     });
   }
 
@@ -119,10 +134,16 @@ class MCPClient {
     const finalText = [];
     const toolResults = [];
 
+    // Get the first (and only) choice from the OpenAI response
     const choice = response.choices[0];
+
+    // If the choice contains a direct message (not a tool call), process it
     if (choice.message.content) {
+      // Add the message content to our final output
       finalText.push(choice.message.content);
-      // Add assistant's response to conversation history
+
+      // Record this assistant response in the conversation history
+      // This maintains context for future interactions
       this.conversationHistory.push({
         role: "assistant",
         content: choice.message.content,
@@ -143,22 +164,26 @@ class MCPClient {
         finalText.push(
           `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`,
         );
-
         // Add tool interaction to conversation history
         this.conversationHistory.push({
           role: "assistant",
           content: "",
           tool_calls: [toolCall],
         } as ChatCompletionMessageParam);
+
         this.conversationHistory.push({
           role: "tool",
           tool_call_id: toolCall.id,
           content: result.content as string,
         } as ChatCompletionMessageParam);
 
+        console.log("conversation history =========================");
+        console.log(this.conversationHistory.map((message) => message.content).join("\n"));
+        console.log("conversation history =========================  ");  
+
         // Get next response from GPT-4 with updated history
         const response = await this.openai.chat.completions.create({
-          model: "gpt-4-turbo-preview",
+          model: "gpt-4o-mini",
           messages: this.conversationHistory,
         });
 
@@ -176,6 +201,11 @@ class MCPClient {
 
     // Trim history if it gets too long
     this.trimConversationHistory();
+
+
+    console.log("Final text =========================");
+    console.log(this.conversationHistory.map((message) => message.content).join("\n"));
+    console.log("Final text =========================  ");
 
     return finalText.join("\n");
   }
