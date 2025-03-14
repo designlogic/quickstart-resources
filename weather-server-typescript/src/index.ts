@@ -14,36 +14,25 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-server.tool(
-  "get-colors-for-mood",
-  "Gets colors for a mood (maximum 2 colors)",
-  {
-    mood: z.string().describe("User's mood"),
-    count: z.number().min(1).max(2).default(1).describe("How many colors to return (1-2)"),
-  },
-  async ({ mood, count }) => {
-    try {
-      // Ensure count is within API limits
-      const safeCount = Math.min(count, 2);
-      
+async function getColorsForMood({ mood, count }: { mood: string; count: number }) {
+  try {
       const response = await fetch('https://workflow.sanctifai.com/webhook/color-chooser', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          colorCount: safeCount,
+          colorCount: count, // Always request 2 colors
           mood: mood,
         }),
       });
 
-      console.error('=== DEBUG START ===');
-      console.error('Request:', { colorCount: safeCount, mood: mood });
+      console.error('=== SERVER DEBUG START ===');
+      console.error('Request:', { colorCount: count, mood: mood });
       
       const text = await response.text();
       console.error('Raw API response:', text);
       console.error('Response status:', response.status);
-      console.error('Response headers:', response.headers);
       
       let data: ColorResponse;
       try {
@@ -51,43 +40,47 @@ server.tool(
         console.error('Parsed response:', JSON.stringify(data, null, 2));
       } catch (e) {
         console.error('Failed to parse response:', e);
-        throw new Error(`Invalid response from color API: ${text}`);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Invalid response from color API: ${text}`,
+            },
+          ],
+        };
       }
-      console.error('=== DEBUG END ===');
+      console.error('=== SERVER DEBUG END ===');
 
-      // Check if the response indicates an error
-      if (!data.success) {
-        throw new Error(data.message || "API request failed");
-      }
-
-      // Format the response text
-      const alertsText = `Colors for ${mood} mood:\n${data.message}`;
+      // Always return the API's message, whether success or failure
       return {
         content: [
           {
-            type: "text",
-            text: alertsText
+            type: "text" as const,
+            text: data.message,
           },
         ],
       };
-    } catch (error: any) {
-      console.error('Error calling color API:', error);
-      
-      // Provide a more specific error message based on the error type
-      const errorMessage = error.message?.includes("maximum color count")
-        ? "Sorry, I can only provide up to 2 colors at a time. Please try again with a smaller number."
-        : "Sorry, I couldn't get color suggestions at the moment. Please try again.";
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: errorMessage,
-          },
-        ],
-      };
-    }
+  } catch (error: any) {
+    console.error('Error calling color API:', error);
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: error.message || "Unknown error occurred",
+        },
+      ],
+    };
+  }
+}
+
+server.tool(
+  "get-colors-for-mood",
+  "Gets colors for a mood",
+  {
+    mood: z.string().describe("User's mood"),
+    count: z.number().min(1).default(1).describe("How many colors to return"),
   },
+  getColorsForMood
 );
 
 // Start the server

@@ -164,6 +164,7 @@ class MCPClient {
         finalText.push(
           `[Calling tool ${toolName} with args ${JSON.stringify(toolArgs)}]`,
         );
+
         // Add tool interaction to conversation history
         this.conversationHistory.push({
           role: "assistant",
@@ -201,11 +202,6 @@ class MCPClient {
 
     // Trim history if it gets too long
     this.trimConversationHistory();
-
-
-    console.log("Final text =========================");
-    console.log(this.conversationHistory.map((message) => message.content).join("\n"));
-    console.log("Final text =========================  ");
 
     return finalText.join("\n");
   }
